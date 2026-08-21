@@ -68,4 +68,7 @@ test('escapes model text when rendering the static page', () => {
 
   assert.match(page, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(page, /<script>alert\(1\)<\/script>/);
+  assert.match(page, /Always-on daily agent/);
+  assert.match(page, /Every 24 hours/);
+  assert.match(page, /Next automatic update/);
 });
