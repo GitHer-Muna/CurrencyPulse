@@ -1,0 +1,9 @@
+node_modules/
+cdk.out/
+coverage/
+*.js
+*.d.ts
+.env
+.DS_Store
+aws-sam-cli-linux-x86_64.zip
+sam-installation/

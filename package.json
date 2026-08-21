@@ -1,0 +1,26 @@
+{
+  "name": "currency-pulse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily currency insights generated with AWS Lambda and Bedrock",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "node --require ts-node/register --test test/generateBrief.test.ts",
+    "cdk": "cdk",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.750.0",
+    "@aws-sdk/client-s3": "3.750.0",
+    "aws-cdk-lib": "2.170.0",
+    "constructs": "10.4.2"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.145",
+    "@types/node": "22.10.2",
+    "aws-cdk": "2.170.0",
+    "esbuild": "0.24.2",
+    "ts-node": "10.9.2",
+    "typescript": "5.7.2"
+  }
+}
