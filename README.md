@@ -77,7 +77,6 @@ If the rates API fails, the Lambda logs the error and does not publish a broken 
 ├── lib/currency-pulse-stack.ts    S3, Lambda, IAM, and Scheduler resources
 ├── lambda/generateBrief.ts        Rates workflow and HTML renderer
 ├── test/generateBrief.test.ts     Unit tests for comparisons and rendering
-├── ARTICLE.md                     Builder Center challenge article draft
 ├── cdk.json                       CDK context and app configuration
 ├── package.json                   Scripts and dependencies
 └── tsconfig.json                  TypeScript configuration
@@ -153,10 +152,6 @@ The S3 site bucket uses a retain policy so a normal `cdk destroy` does not accid
 npx cdk destroy
 aws s3 rb s3://YOUR_BUCKET_NAME --force
 ```
-
-## Challenge article
-
-The Builder Center submission draft is in [`ARTICLE.md`](./ARTICLE.md). It describes the problem, the implementation process, the AWS architecture, and what I learned while turning CurrencyPulse into an unattended daily agent.
 
 ## License
 
