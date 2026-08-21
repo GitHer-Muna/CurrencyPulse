@@ -1,106 +1,163 @@
----
+# CurrencyPulse
 
-## Phase 1 — Everything: Infra + Agent Logic in One Go
+CurrencyPulse is a small always-on AWS application that prepares a daily exchange-rate brief. It fetches current USD exchange rates, compares them with the most recent previous run, and uses Amazon Nova Micro to explain the most important move in plain English.
 
-```
-I'm building a minimal serverless AWS project called "CurrencyPulse" using AWS CDK (TypeScript). It's
-a daily agent that fetches real currency exchange rates, compares them to the previous day, and has an
-AI write one short plain-English insight about what changed and why it's practically relevant. Keep
-this as simple as possible — no database, no API Gateway.
+The result is a static page that is ready when you check it in the morning. It is designed for practical questions such as:
 
-1. S3 bucket:
-   - Static website hosting enabled (index.html as index document)
-   - Public read access via bucket policy (block public ACLs, allow public policy for GET)
+- Did a currency move enough to affect a remittance?
+- Is today a better or worse time to convert money for travel or tuition?
+- Could a change affect the local cost of imported goods?
 
-2. IAM role for a Lambda with least-privilege permissions to:
-   - Read/write the S3 bucket
-   - Invoke Bedrock model `amazon.nova-micro-v1:0`
-   (No external API key needed — the rates API below is free and keyless.)
+## Live application
 
-3. Lambda function called `generateBrief` (Node.js 20.x, TypeScript):
-   a. Fetch current exchange rates from the free, keyless API:
-      `https://open.er-api.com/v6/latest/USD`
-      Extract rates for: NPR, INR, EUR, GBP, AUD (or whichever set I configure via an environment
-      variable TRACKED_CURRENCIES, comma-separated, so I can change the list without touching code).
-   b. Read `data/history.json` from S3 (empty array if it doesn't exist yet). Find yesterday's entry
-      (most recent one before today) and compute the percentage change for each tracked currency vs.
-      today's rate. If there's no prior entry (first run ever), skip the comparison and just report
-      today's rates with no change context.
-   c. Call Bedrock InvokeModel with model id `amazon.nova-micro-v1:0`. Give it today's rates and the
-      day-over-day percentage changes, and ask for ONLY valid JSON (no markdown, no preamble):
-      { "headline": "one short punchy headline naming the most notable move today",
-        "insight": "3-5 sentences in plain, direct English explaining what moved and why it practically
-                    matters — e.g. cheaper/costlier remittances, better/worse time to convert for
-                    travel or tuition, import cost impact. No filler, no generic disclaimers, be
-                    specific about the actual numbers.",
-        "mostNotableCurrency": "the currency code that moved the most" }
-      Explicitly instruct the model to write like a knowledgeable person explaining this to a friend,
-      not like a financial disclaimer or a press release — short sentences, no hedging phrases like
-      "it is important to note that." Keep max_tokens around 350.
-   d. Defensively parse the response (strip markdown fences before JSON.parse; try/catch with clear
-      logging on failure).
-   e. Append today's entry to the history array (date, rates object, headline, insight,
-      mostNotableCurrency), keep only the most recent 60 entries, write back to
-      `data/history.json` on S3.
-   f. Regenerate a single static `index.html` (inline HTML/CSS, no framework). Layout:
-      - Today's headline and insight at the top, clearly the focal point
-      - A clean table of today's rates for each tracked currency, with a small up/down indicator and
-        percentage change next to each if a comparison was available
-      - A compact history section below (last 14 days, one line each: date + headline)
-      - Mobile-friendly, readable typography, no generic "AI-generated content" badges or disclaimers
-        cluttering the page
-      Upload to the S3 bucket root, content-type `text/html`, public-read.
-   g. Add try/catch and CloudWatch logging around both external calls (rates API and Bedrock) so
-      failures are debuggable. If the rates API fails, log the error clearly and exit gracefully
-      rather than writing a broken page.
+**[Open CurrencyPulse](http://currencypulsestack-currencypulsesitebucketcbb7f6cf-mia3tbwtnwt6.s3-website-us-east-1.amazonaws.com)**
 
-Wire the Lambda into the CDK stack with the IAM role, pass TRACKED_CURRENCIES as a CDK-defined
-environment variable, and output the S3 website URL as a CDK stack Output.
+The page displays the latest brief, five tracked rates, daily movement when a previous reading is available, the last completed run, the next scheduled run, and recent headlines.
+
+## How often it updates
+
+CurrencyPulse runs once a day at **02:15 UTC**, which is **08:00 Nepal Time (NPT)**. The Lambda fetches a fresh rate snapshot and publishes a new `index.html` after the brief is generated.
+
+If the page is left open, it refreshes every 15 minutes so it can pick up the latest published brief. The first run has no comparison. From the next run onward, the application compares each new reading with the most recent history entry before the current date.
+
+The schedule is defined as:
+
+```text
+cron(15 2 * * ? *)
 ```
 
-**Checkpoint:** Deploy, manually invoke the Lambda twice on two different days (or fake a second run by
-manually editing `data/history.json` in S3 to simulate "yesterday" with slightly different rates)
-so you can confirm the percentage-change logic actually works before relying on the real schedule.
+## Architecture
 
----
-
-## Phase 2 — Make It Always-On: One EventBridge Rule
-
+```text
+EventBridge Scheduler
+        │  daily at 02:15 UTC
+        ▼
+AWS Lambda: generateBrief
+        │
+        ├── open.er-api.com      current USD exchange rates
+        ├── Amazon S3             data/history.json
+        ├── Amazon Bedrock        Amazon Nova Micro brief
+        └── Amazon S3             index.html static website
 ```
-Add an EventBridge Scheduler rule to the CurrencyPulse CDK stack that invokes the `generateBrief`
-Lambda once per day (pick a fixed UTC time and tell me the corresponding local-morning time for me in
-Nepal). Grant the scheduler correct IAM permission to invoke the Lambda. Confirm the resulting
-cron/rate expression.
+
+The project does not use a database, API Gateway, or a frontend framework. S3 stores the small amount of history the agent needs and hosts the generated page.
+
+### AWS services
+
+- **AWS Lambda** — runs the daily workflow using Node.js 20 and TypeScript.
+- **Amazon EventBridge Scheduler** — invokes `generateBrief` once per day.
+- **Amazon Bedrock** — uses `amazon.nova-micro-v1:0` to write the headline and explanation.
+- **Amazon S3** — stores the latest 60 history entries and hosts the public static website.
+- **AWS IAM** — gives the Lambda only the S3 and Bedrock permissions it needs.
+- **Amazon CloudWatch Logs** — records rates API, Bedrock, and publishing errors.
+
+The exchange-rate endpoint is `https://open.er-api.com/v6/latest/USD`. It is free and does not require an API key.
+
+## What the agent does
+
+On each scheduled run, `generateBrief`:
+
+1. Fetches the current USD rates for the configured currencies.
+2. Reads `data/history.json` from S3, treating a missing file as an empty history.
+3. Finds the most recent entry before today and calculates percentage changes.
+4. Sends the rates and changes to Amazon Nova Micro.
+5. Defensively parses the model's JSON response, including responses wrapped in Markdown fences.
+6. Appends the new entry and keeps the latest 60 entries.
+7. Regenerates the responsive static page and uploads it to S3.
+
+The page shows the latest insight first, followed by the rate table, an explanation of how to read USD-based rates, the automation status, data source, model, schedule, and the last 14 previous briefs.
+
+If the rates API fails, the Lambda logs the error and does not publish a broken page. The page also records the completed run time in Nepal time so it is clear how fresh the data is.
+
+## Project structure
+
+```text
+.
+├── bin/currency-pulse.ts          CDK application entry point
+├── lib/currency-pulse-stack.ts    S3, Lambda, IAM, and Scheduler resources
+├── lambda/generateBrief.ts        Rates workflow and HTML renderer
+├── test/generateBrief.test.ts     Unit tests for comparisons and rendering
+├── ARTICLE.md                     Builder Center challenge article draft
+├── cdk.json                       CDK context and app configuration
+├── package.json                   Scripts and dependencies
+└── tsconfig.json                  TypeScript configuration
 ```
 
-**Checkpoint:** Wait for (or manually trigger) one scheduled run and confirm a fresh brief with a real
-day-over-day comparison appears without you touching anything. **This is your complete, submittable
-project.**
+## Run it locally
 
----
+Prerequisites:
 
-## Cost sanity check
+- Node.js 20 or newer
+- An AWS account with credentials configured
+- AWS CDK bootstrapping permissions
+- Amazon Nova Micro available in the deployment region
 
-- Exchange rate API (open.er-api.com): free, no key
-- Bedrock Nova Micro: a few hundred tokens/day, a small fraction of a cent
-- Lambda, S3, EventBridge: comfortably inside Free Tier at this scale
-- Set an AWS Budget alert at $5 before deploying
-- `cdk destroy` once you're done screenshotting for your article if you want to be extra safe
-
----
-
-
-## Implementation notes
-
-The CDK app is in `bin/currency-pulse.ts` and `lib/currency-pulse-stack.ts`; the Lambda is `lambda/generateBrief.ts`.
-
-Install and synthesize with:
+Install dependencies and run the local checks:
 
 ```bash
 npm install
+npm test
+npm run build
 npx cdk synth
 ```
 
-Deploy with the default tracked currencies (`NPR,INR,EUR,GBP,AUD`) using `npx cdk deploy`. To change them without changing code, pass a context value such as `-c trackedCurrencies=NPR,INR,EUR`.
+`npm test` runs the unit tests. `npm run build` runs strict TypeScript checking. `cdk synth` creates the CloudFormation template and bundles the Lambda asset without deploying anything.
 
-The EventBridge Scheduler expression is `cron(15 2 * * ? *)` in UTC. It runs at 08:00 in Nepal (NPT, UTC+5:45). After deployment, invoke `generateBrief` twice on separate dates—or edit `data/history.json` in the bucket to add a prior-day entry—to verify the day-over-day indicators before relying on the schedule.
+## Deploy to AWS
+
+Set an AWS region first. The deployed application currently runs in `us-east-1`.
+
+```bash
+export AWS_DEFAULT_REGION=us-east-1
+export CDK_DEFAULT_REGION=us-east-1
+
+aws sts get-caller-identity
+npx cdk bootstrap
+npx cdk deploy --require-approval never
+```
+
+CDK prints the following outputs after deployment:
+
+- `WebsiteUrl` — the S3 website endpoint
+- `BucketName` — the bucket containing the site and history
+- `ScheduleExpression` — the daily Scheduler expression
+
+To use a different currency list without editing the Lambda, pass a CDK context value:
+
+```bash
+npx cdk deploy \
+  -c trackedCurrencies=NPR,INR,EUR \
+  --require-approval never
+```
+
+The list is passed to the Lambda as the comma-separated `TRACKED_CURRENCIES` environment variable. The default is `NPR,INR,EUR,GBP,AUD`.
+
+To run the agent manually after deployment:
+
+```bash
+aws lambda invoke \
+  --function-name generateBrief \
+  --region us-east-1 \
+  /tmp/currency-pulse-response.json
+
+cat /tmp/currency-pulse-response.json
+```
+
+## Cost and cleanup
+
+At this scale, the daily workload is small: one rates API request, one short Bedrock request, a Lambda invocation, and a few S3 operations per day. It is intended to fit comfortably within the AWS Free Tier, but AWS pricing and account credits vary. Set a budget alert before using the project for an extended period.
+
+The S3 site bucket uses a retain policy so a normal `cdk destroy` does not accidentally delete the history and website data. To remove everything, destroy the stack and then delete the retained bucket after confirming that the data is no longer needed.
+
+```bash
+npx cdk destroy
+aws s3 rb s3://YOUR_BUCKET_NAME --force
+```
+
+## Challenge article
+
+The Builder Center submission draft is in [`ARTICLE.md`](./ARTICLE.md). It describes the problem, the implementation process, the AWS architecture, and what I learned while turning CurrencyPulse into an unattended daily agent.
+
+## License
+
+This project is provided for learning and demonstration purposes.
